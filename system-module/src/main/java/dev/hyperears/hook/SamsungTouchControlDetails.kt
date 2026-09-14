@@ -47,6 +47,7 @@ internal class SamsungTouchControlDetails private constructor(
     private lateinit var volumeTouchRow: ToggleRow
     private var rendering = false
     private var lastState: SamsungBudsSettingsFeatureState? = null
+    private var holdRefreshGeneration = 0
 
     init {
         popup.apply {
@@ -106,6 +107,9 @@ internal class SamsungTouchControlDetails private constructor(
             if (feature != previousFeature || controlsAvailable != previouslyAvailable) {
                 if (page == 3) showHoldPage()
                 if (page == 4) showCyclePage()
+            }
+            if (!feature.touchHoldActionsPending && !feature.touchHoldCyclesPending) {
+                holdRefreshGeneration += 1
             }
         } finally {
             rendering = false
@@ -325,25 +329,25 @@ internal class SamsungTouchControlDetails private constructor(
         SamsungNoiseCycle.entries.forEach { cycle ->
             addChoice(body, cycleLabel(cycle), "", cycleDraft == cycle, controlsAvailable) {
                 cycleDraft = cycle
-                showCyclePage()
+                sendCycleDraft()
             }
-        }
-        val peerCycle = if (cycleLeft) feature.displayedRightCycle else feature.displayedLeftCycle
-        val canConfirm = controlsAvailable && cycleDraft != null && peerCycle != null
-        addChoice(body, "确定", if (peerCycle == null) "等待耳机上报另一侧设置" else "", false, canConfirm) {
-            val selected = cycleDraft ?: return@addChoice
-            val current = lastState ?: return@addChoice
-            val left = if (cycleLeft) selected else current.displayedLeftCycle ?: return@addChoice
-            val right = if (!cycleLeft) selected else current.displayedRightCycle ?: return@addChoice
-            if (left != current.displayedLeftCycle || right != current.displayedRightCycle) {
-                environment.controlSender(address, SamsungControlRequest.SetTouchHoldNoiseCycles(left, right))
-                lastState = current.copy(requestedLeftCycle = left, requestedRightCycle = right,
-                    touchHoldCyclesPending = true, touchHoldCyclesTimedOut = false)
-            }
-            cycleDraft = null
-            showHoldPage()
         }
         displayPage(4, "噪声切换组合", body)
+    }
+
+    private fun sendCycleDraft() {
+        val selected = cycleDraft ?: return
+        val current = lastState ?: return
+        val left = if (cycleLeft) selected else current.displayedLeftCycle ?: return
+        val right = if (!cycleLeft) selected else current.displayedRightCycle ?: return
+        if (left != current.displayedLeftCycle || right != current.displayedRightCycle) {
+            environment.controlSender(address, SamsungControlRequest.SetTouchHoldNoiseCycles(left, right))
+            lastState = current.copy(requestedLeftCycle = left, requestedRightCycle = right,
+                touchHoldCyclesPending = true, touchHoldCyclesTimedOut = false)
+            scheduleHoldRefresh()
+        }
+        cycleDraft = null
+        showHoldPage()
     }
 
     private fun addChoice(
@@ -403,6 +407,7 @@ internal class SamsungTouchControlDetails private constructor(
         environment.controlSender(address, SamsungControlRequest.SetTouchHoldActions(nextLeft, nextRight))
         lastState = feature.copy(requestedLeftAction = nextLeft, requestedRightAction = nextRight,
             touchHoldActionsPending = true, touchHoldActionsTimedOut = false)
+        scheduleHoldRefresh()
         showHoldPage()
     }
 
@@ -424,6 +429,17 @@ internal class SamsungTouchControlDetails private constructor(
                 render(environment.stateProvider(address))
             }
         }, CONFIRMATION_TIMEOUT_MS)
+    }
+
+    private fun scheduleHoldRefresh() {
+        holdRefreshGeneration += 1
+        val generation = holdRefreshGeneration
+        listOf(350L, 900L, 1_600L, 2_600L, 4_000L).forEach { delayMs ->
+            popup.contentView.postDelayed({
+                if (closed || generation != holdRefreshGeneration) return@postDelayed
+                render(environment.stateProvider(address))
+            }, delayMs)
+        }
     }
 
     private fun clearPending() {
