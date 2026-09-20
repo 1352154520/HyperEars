@@ -163,6 +163,12 @@ data class SamsungBudsSettingsFeatureState(
     val displayedLeftCycle: SamsungNoiseCycle? get() = requestedLeftCycle ?: touchHoldLeftCycle
     val displayedRightCycle: SamsungNoiseCycle? get() = requestedRightCycle ?: touchHoldRightCycle
 
+    // The wire command writes both ears, but an unchanged ear is already confirmed.
+    val leftActionPending: Boolean get() = touchHoldActionsPending &&
+        requestedLeftAction != null && requestedLeftAction != touchHoldLeftAction
+    val rightActionPending: Boolean get() = touchHoldActionsPending &&
+        requestedRightAction != null && requestedRightAction != touchHoldRightAction
+
     companion object { const val FEATURE_ID = "samsung.buds_settings" }
 }
 

@@ -228,10 +228,14 @@ internal open class NativeAncToggleMiLinkCardAdapter(
         private val parent = WeakReference(parent)
         private val wrapper = WeakReference(wrapper)
         private val title = WeakReference(title)
+        // A replaced caption has no parent to retain it. Keep it until unbind so GC cannot
+        // interrupt state delivery or prevent restoration of the native card.
+        private var detachedTitle: View? = title.takeIf { replacesTitle }
         private val ancCard = WeakReference(ancCard)
         private val accessory = WeakReference(accessory)
 
         override fun render(state: EarbudState) {
+            controller.render(state)
             val wrapper = wrapper.get() ?: return
             val title = title.get() ?: return
             val ancCard = ancCard.get() ?: return
@@ -242,14 +246,15 @@ internal open class NativeAncToggleMiLinkCardAdapter(
             wrapper.visibility = ancCard.visibility
             accessory.visibility =
                 if (ancCard.isVisible && (replacesTitle || title.isVisible)) View.VISIBLE else View.GONE
-            controller.render(state)
         }
 
         override fun unbind() {
+            controller.unbind()
+            val retainedTitle = detachedTitle ?: title.get()
+            detachedTitle = null
             val parent = parent.get() ?: return
             val wrapper = wrapper.get() ?: return
-            val title = title.get() ?: return
-            controller.unbind()
+            val title = retainedTitle ?: return
             if (wrapper.parent !== parent) return
 
             (title.parent as? ViewGroup)?.removeView(title)
@@ -393,6 +398,7 @@ internal open class NativeAncToggleMiLinkCardAdapter(
             rendering = true
             try {
                 entries.forEach { entry ->
+                    entry.details?.render(state)
                     val toggle = entry.toggle.get() ?: return@forEach
                     val value = entry.spec.render(state)
                     if (entry.pendingChecked == value.checked) entry.pendingChecked = null
@@ -400,7 +406,6 @@ internal open class NativeAncToggleMiLinkCardAdapter(
                     entry.group.get()?.alpha = if (value.enabled) ENABLED_ALPHA else DISABLED_ALPHA
                     toggle.isChecked = entry.pendingChecked ?: value.checked
                     toggle.isEnabled = value.available && value.enabled && entry.pendingChecked == null
-                    entry.details?.render(state)
                 }
             } finally {
                 rendering = false

@@ -47,7 +47,7 @@ internal class SamsungTouchControlDetails private constructor(
     private lateinit var volumeTouchRow: ToggleRow
     private var rendering = false
     private var lastState: SamsungBudsSettingsFeatureState? = null
-    private var holdRefreshGeneration = 0
+    private var unsubscribeState: (() -> Unit)? = null
 
     init {
         popup.apply {
@@ -60,9 +60,12 @@ internal class SamsungTouchControlDetails private constructor(
             setBackgroundDrawable(Color.TRANSPARENT.toDrawable())
             setOnDismissListener {
                 closed = true
+                unsubscribeState?.invoke()
+                unsubscribeState = null
                 clearPending()
             }
         }
+        unsubscribeState = environment.observeState(address) { state -> render(state) }
         anchor.post {
             if (closed) return@post
             runCatching {
@@ -71,6 +74,7 @@ internal class SamsungTouchControlDetails private constructor(
                 }
                 popup.showAtLocation(anchor.rootView, Gravity.CENTER, 0, 0)
             }.onFailure {
+                dismiss()
                 ModuleLog.warn("MiLinkUi", "unable to open Samsung touch controls", it)
             }
         }
@@ -85,6 +89,11 @@ internal class SamsungTouchControlDetails private constructor(
         }
         val previousFeature = lastState
         val previouslyAvailable = controlsAvailable
+        if (feature != previousFeature) {
+            ModuleLog.debug("MiLinkUi", "Samsung details state rev=${state.revision} " +
+                "actionsPending=${feature.touchHoldActionsPending} cyclesPending=${feature.touchHoldCyclesPending} " +
+                "left=${feature.touchHoldLeftAction} right=${feature.touchHoldRightAction}")
+        }
         lastState = feature
         controlsAvailable = state.sessionActive && state.connected &&
             !feature.touchpadLocked && feature.touchHoldEnabled
@@ -93,23 +102,11 @@ internal class SamsungTouchControlDetails private constructor(
             masterRow.render(!feature.touchpadLocked, state.sessionActive && state.connected)
             val touchEnabled = !feature.touchpadLocked
             gestureRows.forEach { it.render(feature, touchEnabled && state.sessionActive && state.connected) }
-            leftActionRow.render(
-                feature.displayedLeftAction,
-                controlsAvailable,
-                feature.touchHoldActionsPending,
-            )
-            rightActionRow.render(
-                feature.displayedRightAction,
-                controlsAvailable,
-                feature.touchHoldActionsPending,
-            )
+            renderHoldFeedback()
             volumeTouchRow.render(feature.outsideDoubleTapEnabled, touchEnabled && state.sessionActive && state.connected)
             if (feature != previousFeature || controlsAvailable != previouslyAvailable) {
                 if (page == 3) showHoldPage()
                 if (page == 4) showCyclePage()
-            }
-            if (!feature.touchHoldActionsPending && !feature.touchHoldCyclesPending) {
-                holdRefreshGeneration += 1
             }
         } finally {
             rendering = false
@@ -118,6 +115,9 @@ internal class SamsungTouchControlDetails private constructor(
 
     override fun dismiss() {
         closed = true
+        unsubscribeState?.invoke()
+        unsubscribeState = null
+        clearPending()
         if (popup.isShowing) popup.dismiss()
     }
 
@@ -279,7 +279,10 @@ internal class SamsungTouchControlDetails private constructor(
     private fun navigateBack() {
         when (page) {
             4 -> { cycleDraft = null; showHoldPage() }
-            3 -> displayPage(2, "触摸控制", mainBody)
+            3 -> {
+                renderHoldFeedback()
+                displayPage(2, "触摸控制", mainBody)
+            }
             else -> dismiss()
         }
     }
@@ -313,11 +316,6 @@ internal class SamsungTouchControlDetails private constructor(
                 addSection(body, "当前：Spotify（外部设置）", secondary)
             }
         }
-        if (feature.touchHoldActionsPending || feature.touchHoldCyclesPending) {
-            addSection(body, "已发送，等待耳机确认…", secondary)
-        } else if (feature.touchHoldActionsTimedOut || feature.touchHoldCyclesTimedOut) {
-            addSection(body, "上次设置确认超时，当前显示耳机回报值", secondary)
-        }
         displayPage(3, "长按", body)
     }
 
@@ -344,7 +342,6 @@ internal class SamsungTouchControlDetails private constructor(
             environment.controlSender(address, SamsungControlRequest.SetTouchHoldNoiseCycles(left, right))
             lastState = current.copy(requestedLeftCycle = left, requestedRightCycle = right,
                 touchHoldCyclesPending = true, touchHoldCyclesTimedOut = false)
-            scheduleHoldRefresh()
         }
         cycleDraft = null
         showHoldPage()
@@ -407,7 +404,7 @@ internal class SamsungTouchControlDetails private constructor(
         environment.controlSender(address, SamsungControlRequest.SetTouchHoldActions(nextLeft, nextRight))
         lastState = feature.copy(requestedLeftAction = nextLeft, requestedRightAction = nextRight,
             touchHoldActionsPending = true, touchHoldActionsTimedOut = false)
-        scheduleHoldRefresh()
+        renderHoldFeedback()
         showHoldPage()
     }
 
@@ -431,15 +428,10 @@ internal class SamsungTouchControlDetails private constructor(
         }, CONFIRMATION_TIMEOUT_MS)
     }
 
-    private fun scheduleHoldRefresh() {
-        holdRefreshGeneration += 1
-        val generation = holdRefreshGeneration
-        listOf(350L, 900L, 1_600L, 2_600L, 4_000L).forEach { delayMs ->
-            popup.contentView.postDelayed({
-                if (closed || generation != holdRefreshGeneration) return@postDelayed
-                render(environment.stateProvider(address))
-            }, delayMs)
-        }
+    private fun renderHoldFeedback() {
+        val feature = lastState ?: return
+        leftActionRow.render(feature.displayedLeftAction, controlsAvailable)
+        rightActionRow.render(feature.displayedRightAction, controlsAvailable)
     }
 
     private fun clearPending() {
@@ -515,10 +507,10 @@ internal class SamsungTouchControlDetails private constructor(
         private val valueView: WeakReference<TextView>,
         var current: SamsungTouchAction = SamsungTouchAction.NOISE_CONTROL,
     ) {
-        fun render(value: SamsungTouchAction, enabled: Boolean, synchronizing: Boolean) {
+        fun render(value: SamsungTouchAction, enabled: Boolean) {
             current = value
             // This view belongs to MiLink: module R IDs are not valid in its Resources.
-            val caption = actionLabel(current) + if (synchronizing) " · 同步中  ›" else "  ›"
+            val caption = actionLabel(current) + "  ›"
             valueView.get()?.text = caption
             container.get()?.apply {
                 isEnabled = enabled

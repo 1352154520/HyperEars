@@ -287,6 +287,27 @@ class SamsungBuds2ProAdapterTest {
         assertEquals(null, renamed.runtimeState().features.get<SamsungBudsSettingsFeatureState>())
     }
 
+    @Test
+    fun changingSecondEarDoesNotMarkConfirmedFirstEarPending() {
+        val adapter = SamsungBuds2ProAdapter()
+        adapter.receive(extendedStatus())
+        adapter.executeControl(SamsungControlRequest.SetTouchHoldActions(
+            SamsungTouchAction.VOICE_ASSISTANT, SamsungTouchAction.NOISE_CONTROL))
+        var state = adapter.runtimeState().features.get<SamsungBudsSettingsFeatureState>()!!
+        assertTrue(state.leftActionPending)
+        assertFalse(state.rightActionPending)
+        adapter.receive(SamsungBudsCodec.packet(0x42, byteArrayOf(0x92.toByte(), 1, 2)))
+        adapter.executeControl(SamsungControlRequest.SetTouchHoldActions(
+            SamsungTouchAction.VOICE_ASSISTANT, SamsungTouchAction.VOICE_ASSISTANT))
+        state = adapter.runtimeState().features.get<SamsungBudsSettingsFeatureState>()!!
+        assertFalse(state.leftActionPending)
+        assertTrue(state.rightActionPending)
+        adapter.receive(SamsungBudsCodec.packet(0x42, byteArrayOf(0x92.toByte(), 1, 1)))
+        state = adapter.runtimeState().features.get<SamsungBudsSettingsFeatureState>()!!
+        assertFalse(state.leftActionPending)
+        assertFalse(state.rightActionPending)
+    }
+
     private fun extendedStatus(): ByteArray = hex(
         "FD 31 00 61 0D 04 64 64 01 00 33 58 00 01 BF 22 00 01 46 01 46 01 00 00 " +
             "03 35 00 03 00 10 01 01 01 01 32 03 01 01 01 00 0C AE 01 00 03 00 01 00 " +
